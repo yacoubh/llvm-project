@@ -68,25 +68,7 @@ static SourceLocation findEndLocation(const Stmt &S, const SourceManager &SM,
       // EOL, insert brace before.
       break;
     }
-    tok::TokenKind TokKind = getTokenKind(Loc, SM, Context);
-    if (TokKind != tok::comment) {
-      // Non-comment token, insert brace before.
-      break;
-    }
-
-    SourceLocation TokEndLoc =
-        Lexer::getLocForEndOfToken(Loc, 0, SM, Context->getLangOpts());
-    SourceRange TokRange(Loc, TokEndLoc);
-    StringRef Comment = Lexer::getSourceText(
-        CharSourceRange::getTokenRange(TokRange), SM, Context->getLangOpts());
-    if (Comment.starts_with("/*") && Comment.contains('\n')) {
-      // Multi-line block comment, insert brace before.
-      break;
-    }
-    // else: Trailing comment, insert brace after the newline.
-
-    // Fast-forward current token.
-    Loc = TokEndLoc;
+    break;
   }
   return Loc;
 }
@@ -237,7 +219,7 @@ bool BracesAroundStatementsCheck::checkStmt(
     ClosingInsertion = "} ";
   } else {
     EndLoc = findEndLocation(*S, SM, Context);
-    ClosingInsertion = "\n}";
+    ClosingInsertion = "}";
   }
 
   assert(StartLoc.isValid());
