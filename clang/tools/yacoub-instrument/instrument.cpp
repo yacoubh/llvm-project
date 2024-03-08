@@ -13,10 +13,16 @@ using namespace clang::tooling;
 
 class YVisitor : public RecursiveASTVisitor<YVisitor> {
 public:
+    //bool shouldTraversePostOrder() const { return true;}
     YVisitor(std::string FName, Rewriter &Rewrite) : FunctionName(FName), Rewrite(Rewrite) {}
     bool VisitCompoundStmt(CompoundStmt *S){
+        S->printPretty(llvm::outs(), nullptr, Rewrite.getLangOpts());
+        std::string comment = "/*func(\"" + FunctionName + "\", ID);*/";
         SourceLocation start = S->getBeginLoc();
-        Rewrite.InsertTextAfterToken(start, "//func(\"" + FunctionName + "\", ID);");
+        std::string stmtText = Lexer::getSourceText(CharSourceRange::getTokenRange(start, S->getEndLoc()), Rewrite.getSourceMgr(),Rewrite.getLangOpts()).str();
+        if(stmtText.find(comment) == std::string::npos){
+            Rewrite.InsertTextAfterToken(start, comment);
+        }
         return true;
     }
 private:
@@ -32,7 +38,23 @@ public:
     virtual void run(const MatchFinder::MatchResult &Result) override {
       const FunctionDecl *FD = Result.Nodes.getNodeAs<FunctionDecl>("func");
       if (FD && FD->hasBody()) {
-          YVisitor visitor(FD->getQualifiedNameAsString(), Rewrite);
+          std::string functionName;
+          {
+              clang::LangOptions LangOpts;
+              LangOpts.CPlusPlus = true;
+              clang::PrintingPolicy Policy(LangOpts);
+              llvm::raw_string_ostream s(functionName);
+              s << FD->getReturnType().getAsString(Policy) << " ";
+              FD->printQualifiedName(s);
+              s << "(";
+              for (auto it = FD->param_begin(), it_end = FD->param_end(); it != it_end; ++it) {
+                  if (it != FD->param_begin())
+                      s << ", ";
+                  s << (*it)->getType().getAsString(Policy);
+              }
+              s << ")";
+          }
+          YVisitor visitor(functionName, Rewrite);
           visitor.TraverseStmt(FD->getBody());
       }
     }
