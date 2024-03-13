@@ -6,27 +6,48 @@
 #include <clang/AST/Mangle.h>
 #include <clang/AST/AST.h>
 #include <clang/AST/RecursiveASTVisitor.h>
+#include <unordered_set>
 
 using namespace clang;
 using namespace clang::ast_matchers;
 using namespace clang::tooling;
+
+class XVisitor : public RecursiveASTVisitor<XVisitor> {
+private:
+    std::unordered_set<const CompoundStmt*> &visited;
+public:
+    XVisitor(std::unordered_set<const CompoundStmt*> &visited) : visited(visited) {}
+
+    bool VisitCompoundStmt(CompoundStmt *CS) {
+        visited.insert(CS);
+        return true;
+    }
+};
 
 class YVisitor : public RecursiveASTVisitor<YVisitor> {
 public:
     //bool shouldTraversePostOrder() const { return true;}
     YVisitor(std::string FName, Rewriter &Rewrite) : FunctionName(FName), Rewrite(Rewrite) {}
     bool VisitCompoundStmt(CompoundStmt *S){
-        S->printPretty(llvm::outs(), nullptr, Rewrite.getLangOpts());
-        std::string comment = "/*func(\"" + FunctionName + "\", ID);*/";
-        SourceLocation start = S->getBeginLoc();
-        std::string stmtText = Lexer::getSourceText(CharSourceRange::getTokenRange(start, S->getEndLoc()), Rewrite.getSourceMgr(),Rewrite.getLangOpts()).str();
-        if(stmtText.find(comment) == std::string::npos){
-            Rewrite.InsertTextAfterToken(start, comment);
+        if(visited.insert(S).second){
+            S->printPretty(llvm::outs(), nullptr, Rewrite.getLangOpts());
+            std::string comment = "/*func(\"" + FunctionName + "\", ID);*/";
+            SourceLocation start = S->getBeginLoc();
+            std::string stmtText = Lexer::getSourceText(CharSourceRange::getTokenRange(start, S->getEndLoc()), Rewrite.getSourceMgr(),Rewrite.getLangOpts()).str();
+            if(stmtText.find(comment) == std::string::npos){
+                Rewrite.InsertTextAfterToken(start, comment);
+            }
         }
         return true;
     }
-private:
 
+    bool VisitFunctionDecl(FunctionDecl *F) {
+        XVisitor xvisitor(visited);
+        xvisitor.TraverseStmt(F->getBody());
+        return true;
+    }
+private:
+    std::unordered_set<const CompoundStmt*> visited;
     std::string FunctionName;
     Rewriter &Rewrite;
 };
@@ -34,25 +55,27 @@ private:
 class BlockHandler : public MatchFinder::MatchCallback {
 public:
   BlockHandler(Rewriter &Rewrite) : Rewrite(Rewrite) {}
-    
+
     virtual void run(const MatchFinder::MatchResult &Result) override {
       const FunctionDecl *FD = Result.Nodes.getNodeAs<FunctionDecl>("func");
       if (FD && FD->hasBody()) {
           std::string functionName;
           {
-              clang::LangOptions LangOpts;
-              LangOpts.CPlusPlus = true;
-              clang::PrintingPolicy Policy(LangOpts);
               llvm::raw_string_ostream s(functionName);
-              s << FD->getReturnType().getAsString(Policy) << " ";
-              FD->printQualifiedName(s);
-              s << "(";
-              for (auto it = FD->param_begin(), it_end = FD->param_end(); it != it_end; ++it) {
-                  if (it != FD->param_begin())
-                      s << ", ";
-                  s << (*it)->getType().getAsString(Policy);
+              clang::MangleContext *MC = Result.Context->createMangleContext();
+              if (MC->shouldMangleDeclName(FD)) {
+                   if(isa<CXXConstructorDecl>(FD)){
+                      auto *C = llvm::dyn_cast<CXXConstructorDecl>(FD);
+                      MC->mangleName(GlobalDecl(C), s);
+                  } else if (isa<CXXDestructorDecl>(FD)){
+                      auto *D = llvm::dyn_cast<CXXDestructorDecl>(FD);
+                      MC->mangleName(GlobalDecl(D), s);
+                  } else{
+                      MC->mangleName(GlobalDecl(FD), s);
+                  }
+              } else {
+                FD->printQualifiedName(s);
               }
-              s << ")";
           }
           YVisitor visitor(functionName, Rewrite);
           visitor.TraverseStmt(FD->getBody());
@@ -65,7 +88,7 @@ private:
 class YASTConsumer : public ASTConsumer {
 public:
   YASTConsumer(Rewriter &R) : handleBlock(R) {
-    this->Matcher.addMatcher(functionDecl(isExpansionInMainFile()).bind("func"), &handleBlock);
+    this->Matcher.addMatcher(traverse(TK_IgnoreUnlessSpelledInSource, functionDecl(isExpansionInMainFile()).bind("func")), &handleBlock);
   }
     void HandleTranslationUnit(ASTContext &Context) override {
         Matcher.matchAST(Context);
